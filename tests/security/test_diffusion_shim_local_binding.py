@@ -21,6 +21,7 @@ in-process, no socket"""
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,7 +57,9 @@ def client(monkeypatch):
         return "ok"
 
     monkeypatch.setattr(shim.V, "generate_visual", _generate_visual)
-    monkeypatch.setitem(shim._STATE, "server", object())
+    monkeypatch.setitem(
+        shim._STATE, "server", SimpleNamespace(maxtok = 24576, maxtok_req = 24576)
+    )
     monkeypatch.setitem(shim._STATE, "host", "127.0.0.1")
     with TestClient(shim.app, base_url = LOCAL) as test_client:
         test_client.calls = calls
@@ -64,6 +67,13 @@ def client(monkeypatch):
 
 
 # --- A browser page the user visits is not the local user ---
+
+def test_health_reports_requested_and_resolved_context(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["context_length"] == 24576
+    assert response.json()["requested_context_length"] == 24576
+
 
 def test_a_cross_site_origin_is_refused(client):
     """The CORS-simple POST: text/plain needs no preflight, so nothing else stops it."""

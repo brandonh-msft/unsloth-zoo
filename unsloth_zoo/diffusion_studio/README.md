@@ -36,6 +36,12 @@ python -m unsloth_zoo.diffusion_studio.shim \
 The binary also resolves from `DG_VISUAL_BIN` or from `PATH`. The model loads once; requests are
 serialized. It prints `... shim ready on http://127.0.0.1:8123`.
 
+Set `--maxtok` to request an exact context size, or leave it at `0` to auto-size. An explicit
+size must fit the model's limit and available memory; the server fails to start rather than
+silently choosing a smaller size. Requests above 8192 require an updated runner whose
+`--capabilities` output includes `exact_context_v1`. Multi-GPU models have a lower context
+limit because their attention is not chunked.
+
 ## 2. Use it from Unsloth
 
 Unsloth Studio detects a DiffusionGemma GGUF (`general.architecture = diffusion-gemma`) and launches this

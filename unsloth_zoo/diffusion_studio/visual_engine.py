@@ -163,9 +163,9 @@ def _build_subprocess_env(server_bin, gpu = None, maxtok = 0, ngl = None, base_e
 
 
 def _canvas_maxtok(maxtok):
-    """Keeps MAXTOK only when 0 < value <= 8192, else 0 for auto-size: the non-causal canvas compute buffer grows ~quadratically, so oversized values must defer."""
+    """Keep explicit requests intact; zero asks the native runner to auto-size."""
     maxtok = int(maxtok)
-    return maxtok if 0 < maxtok <= 8192 else 0
+    return max(0, maxtok)
 
 
 def _replace_request_file(req_path, req):
@@ -209,6 +209,22 @@ class VisualServer:
             self.env = _build_subprocess_env(self.server_bin, gpu=gpu, maxtok=_canvas_maxtok(maxtok), ngl=ngl)
             self.ngl = int(self.env["NGL"])
             self.p = None
+            if self.maxtok_req > 8192:
+                try:
+                    capabilities = subprocess.run(
+                        [self.server_bin, "--capabilities"],
+                        env = self.env, capture_output = True, text = True, timeout = 10,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    raise RuntimeError(
+                        "DIFFUSION_CONTEXT_ERROR: Could not verify the DiffusionGemma runner; "
+                        "update the runner before requesting a large context."
+                    ) from exc
+                if capabilities.returncode != 0 or "exact_context_v1" not in capabilities.stdout.split():
+                    raise RuntimeError(
+                        "DIFFUSION_CONTEXT_ERROR: This DiffusionGemma runner cannot safely honor "
+                        "a context above 8192 tokens. Update the runner."
+                    )
             self._spawn()
         except BaseException:
             # close() never runs on an object whose __init__ failed, so the request dir is removed here or it leaks once per supervisor retry.
@@ -222,16 +238,26 @@ class VisualServer:
         self.p = subprocess.Popen([self.server_bin, self.gguf], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   env=self.env, bufsize=1, text=True,
                                   preexec_fn=_set_pdeathsig if os.name == "posix" else None)
-        # Only stdout is UTF-8: the server fopen()s the stdin request path, which is ANSI on Windows.
-        self.p.stdout = io.TextIOWrapper(self.p.stdout.detach(), encoding="utf-8")
-        line = self.p.stdout.readline().strip()
-        if not line.startswith("READY"):
-            raise RuntimeError(f"visual server failed to start: {line!r}")
-        # Server prints "READY <n_vocab> <maxtok>": maxtok is the resolved per-turn context budget, possibly auto-sized
-        # to fit VRAM when MAXTOK=0; older servers print only "READY <n_vocab>".
-        parts = line.split()
-        self.n_vocab = int(parts[1]) if len(parts) > 1 else 0
-        self.maxtok = int(parts[2]) if len(parts) > 2 else self.maxtok_req
+        try:
+            # Only stdout is UTF-8: the server fopen()s the stdin request path, which is ANSI on Windows.
+            self.p.stdout = io.TextIOWrapper(self.p.stdout.detach(), encoding="utf-8")
+            line = self.p.stdout.readline().strip()
+            parts = line.split()
+            if not parts or parts[0] != "READY":
+                raise RuntimeError(f"visual server failed to start: {line!r}")
+            self.n_vocab = int(parts[1]) if len(parts) > 1 else 0
+            self.maxtok = int(parts[2]) if len(parts) > 2 else 0
+            if self.maxtok_req > 0 and self.maxtok != self.maxtok_req:
+                actual = str(self.maxtok) if self.maxtok else "unknown"
+                raise RuntimeError(
+                    f"DIFFUSION_CONTEXT_ERROR: Requested a {self.maxtok_req}-token context "
+                    f"but the DiffusionGemma runner reported {actual}. Update the runner."
+                )
+        except BaseException:
+            if self.p.poll() is None:
+                self.p.kill()
+            self.p.wait(timeout = 10)
+            raise
 
     def restart(self):
         """Kills a dead or stuck server and spawns a fresh one, so one bad turn does not leave later turns failing with broken pipes."""

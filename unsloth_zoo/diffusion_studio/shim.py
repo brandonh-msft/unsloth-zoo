@@ -244,8 +244,7 @@ def _max_blocks(body):
         mt = int(mt)
     except (TypeError, ValueError):
         mt = 2048
-    # A size bound, not a deadline: explicit maxtok is capped at 8192 by `_canvas_maxtok`, so this binds only on an
-    # auto-sized budget above 16384; `DG_MAX_BLOCKS` raises it and is read per call so Studio can set it after import.
+    # A size bound, not a deadline; `DG_MAX_BLOCKS` raises it and is read per call.
     try:
         ceiling = max(1, int(os.environ.get("DG_MAX_BLOCKS", "").strip()))
     except ValueError:
@@ -283,7 +282,13 @@ def models():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": MODEL_ID}
+    server = _STATE.get("server")
+    return {
+        "status": "ok",
+        "model": MODEL_ID,
+        "context_length": server.maxtok if server is not None and server.maxtok > 0 else None,
+        "requested_context_length": server.maxtok_req if server is not None else None,
+    }
 
 
 def _tools_for_choice(tools, tool_choice):
